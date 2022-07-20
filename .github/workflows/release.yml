@@ -1,0 +1,36 @@
+name: Release process
+on:
+  push:
+    tags:
+      - 'v.*'
+
+jobs:
+  release:
+    name: Generate release for helm charts
+    runs-on: ubuntu-20.04
+    if: startsWith(github.event.ref, 'refs/tags/v')
+    needs: [dependencies]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Define current tag version
+        run: echo "RELEASE_VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
+
+      - name: Generate documentation 
+        run: |
+            pushd .bin
+            curl -L https://github.com/norwoodj/helm-docs/releases/download/v1.5.0/helm-docs_1.5.0_Linux_x86_64.tar.gz -o helm-docs.tar.gz
+            tar -xvf helm-docs.tar.gz
+            ./helm-docs -c ../helm/charts
+            popd
+      - name: Release helm charts
+        run: make release
+      - name: Push commit for release 
+        run: |
+          git config --global user.email "aeneas@ory.sh"
+          git config --global user.name "aeneasr"
+          git checkout -b make-release HEAD
+          git add -A 
+          git commit -a -m "Release ${RELEASE_VERSION}"
+          # TODO: Remove comment
+          git push origin HEAD:master
