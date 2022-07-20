@@ -1,0 +1,114 @@
+name: Running test on charts
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+
+  dependencies:
+    name: Prepare Dependencies
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - uses: actions/setup-go@v2
+        with:
+          go-version: '1.17'
+      - name: Setup dependencies
+        uses: ./.github/actions/deps-setup
+
+  detect-repo-changes:
+    name: Detected Repo Changes
+    runs-on: ubuntu-20.04
+    outputs:
+      helms-changed: ${{ steps.changed_charts.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - uses: dorny/paths-filter@v2.9.1
+        id: filter
+        with:
+          base: master
+          filters: |
+            hydra-helm:
+              - 'helm/charts/hydra/**'
+            kratos-helm:
+              - 'helm/charts/kratos/**'
+            keto-helm:
+              - 'helm/charts/keto/**'
+      # This step will take output from paths-filter and then process it in order to get what helm charts have been updated
+      # It allows us to do matrix in validating & testing process
+      # `-helm` suffix aims that we can easily filter stuff 
+      #
+      # TODO: Add to jq a truthy filter so that only REALLY updated folder are filtered, currently it's only for test purposes
+      - name: Generate helm chart matrix to be validated
+        id: changed_charts
+        env:
+          FILTER_OUTPUT: ${{ toJson(steps.filter.outputs) }}
+        run: |
+           updated_charts=$(echo "$FILTER_OUTPUT" | jq -r 'to_entries | map(select(.key | endswith("-helm"))) | map(.key)')
+           updated_charts=$(echo "$updated_charts" | sed "s/-helm//g")
+
+           echo ::set-output name=matrix::{\"chart\":$(echo $updated_charts)}\"
+           
+           echo "Charts array to run CI on: $updated_charts"
+  
+  check:
+    name: Check Helm Chart - ${{ matrix.chart }}
+    if: ${{ needs.detect-repo-changes.outputs.helms-changed != '[]' }}
+    needs: [dependencies, detect-repo-changes]
+    runs-on: ubuntu-20.04
+    env:
+      HELM_CHART: ${{ matrix.chart }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Installing kubeval
+        run: helm plugin install https://github.com/instrumenta/helm-kubeval
+      - name: Lint helm chart 
+        run: make helm-lint
+      - name: Validate helm chart 
+        run: make helm-validate
+    strategy:
+      matrix: ${{ fromJson(needs.detect-repo-changes.outputs.helms-changed) }}
+
+ 
+  test-upgrade:
+    name: Test upgrade Helm Chart - ${{ matrix.chart }}
+    if: ${{ needs.detect-repo-changes.outputs.helms-changed != '[]' }}
+    needs: [check, detect-repo-changes, dependencies]
+    runs-on: ubuntu-20.04
+    env:
+      HELM_CHART: ${{ matrix.chart }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      # TODO: Again getting reckt by cache ??
+      - name: Install k3d 
+        run: |
+          export PATH=".bin:$PATH"
+          curl -s https://raw.githubusercontent.com/k3d-io/k3d/v5.4.4/install.sh | USE_SUDO="false" K3D_INSTALL_DIR=".bin" bash
+      - name: Test upgrade for helm chart 
+        run: make helm-upgrade
+    strategy:
+      matrix: ${{ fromJson(needs.detect-repo-changes.outputs.helms-changed) }}
+ 
+  test-install:
+    name: Test install Helm Chart - ${{ matrix.chart }}
+    if: ${{ needs.detect-repo-changes.outputs.helms-changed != '[]' }}
+    needs: [check, detect-repo-changes, dependencies]
+    runs-on: ubuntu-20.04
+    env:
+      HELM_CHART: ${{ matrix.chart }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      # TODO: Again getting reckt by cache ??
+      - name: Install k3d 
+        run: |
+          export PATH=".bin:$PATH"
+          curl -s https://raw.githubusercontent.com/k3d-io/k3d/v5.4.4/install.sh | USE_SUDO="false" K3D_INSTALL_DIR=".bin" bash
+      - name: Test install for helm chart 
+        run: make helm-test
+    strategy:
+      matrix: ${{ fromJson(needs.detect-repo-changes.outputs.helms-changed) }}
